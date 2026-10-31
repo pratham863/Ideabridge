@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IdeaBridge</title>
+<style>
+:root{--bg:#faf8f4;--card:#fff;--ink:#1d1b18;--mute:#6b665e;--line:#e6e1d8;--acc:#0f6b4f;--accink:#fff;--soft:#e4f2ec;--warn:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#16150f;--card:#201f18;--ink:#f1ede4;--mute:#a09a8d;--line:#35332a;--acc:#4cc59b;--accink:#06231a;--soft:#1c3329;--warn:#ff8a80}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:680px;margin:0 auto;padding:16px}h1{font:700 26px Georgia,serif;margin:8px 0 2px}.sub,.mute{color:var(--mute)}.mute{font-size:14px}
+.tabs{display:flex;gap:6px;background:var(--soft);padding:4px;border-radius:12px;margin:12px 0 16px}
+.tabs button{flex:1;border:0;background:none;color:var(--ink);padding:10px 4px;border-radius:9px;font:600 14px inherit;cursor:pointer}.tabs button.on{background:var(--acc);color:var(--accink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}.card h3{margin:0 0 4px}
+.tag{display:inline-block;font-size:12px;font-weight:600;background:var(--soft);color:var(--acc);padding:2px 9px;border-radius:99px;margin:0 4px 6px 0}
+label{display:block;font-weight:600;font-size:14px;margin:12px 0 4px}
+input,textarea,select{width:100%;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}textarea{min-height:100px}
+.btn{border:0;background:var(--acc);color:var(--accink);padding:12px;border-radius:10px;font:600 15px inherit;cursor:pointer;margin-top:14px;width:100%}.btn.ghost{background:none;border:1px solid var(--acc);color:var(--acc);margin-top:8px}
+.msg{padding:10px;border-radius:10px;margin-top:10px;background:var(--soft);font-size:14px}.err{color:var(--warn)}
+.offer{border-left:3px solid var(--acc);padding:6px 10px;margin-top:8px;background:var(--bg);font-size:14px}
+.empty{text-align:center;color:var(--mute);padding:30px 10px}.row{display:flex;gap:8px;margin-bottom:12px}.row>*{flex:1}
+</style></head><body><div class="wrap">
+<h1>IdeaBridge</h1><p class="sub">Entrepreneurs share ideas. Companies sponsor or invest.</p>
+<div id="app"></div></div>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getFirestore,collection,addDoc,deleteDoc,doc,onSnapshot,query,where,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCdSb_CeZu5TVCBxN-_tA_0NIkh9w5IqjE",
+  authDomain: "idea-bridge-21d88.firebaseapp.com",
+  projectId: "idea-bridge-21d88",
+  storageBucket: "idea-bridge-21d88.firebasestorage.app",
+  messagingSenderId: "853289680822",
+  appId: "1:853289680822:web:6eac9a88dffe6aa15ecb17"
+};
+
+const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
+const CATS=["Tech","Food","Health","Education","Fashion","Finance","Green energy","Other"];
+const SEEK={sponsor:"Sponsorship",equity:"Equity investment",either:"Open to either"};
+let user=null,ideas=[],offers=new Map(),tab="browse",openForm=null,note="",isErr=false,fc="",q="",unsubs=[];
+const $=id=>document.getElementById(id),V=id=>($(id)?.value||"").trim();
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago=t=>{if(!t)return"just now";const d=(Date.now()-t.toMillis())/6e4;return d<1?"just now":d<60?Math.floor(d)+"m ago":d<1440?Math.floor(d/60)+"h ago":Math.floor(d/1440)+"d ago"};
+const msg=()=>note?`<div class="msg ${isErr?"err":""}">${esc(note)}</div>`:"";
+const say=(m,e)=>{note=m;isErr=!!e;render()};
+
+function authView(){return `<div class="card"><h3>Sign in or create an account</h3>
+<label>Email</label><input id="em" type="email" autocomplete="email"><label>Password (6+ characters)</label><input id="pw" type="password" autocomplete="current-password">
+<button class="btn" data-a="in">Sign in</button><button class="btn ghost" data-a="up">Create account</button>${msg()}</div>`}
+
+function cardHTML(i){const n=[...offers.values()].filter(o=>o.ideaId===i.id).length,mine=i.ownerId===user.uid;
+return `<div class="card"><span class="tag">${esc(i.category)}</span><span class="tag">${esc(SEEK[i.seeking])}</span><h3>${esc(i.title)}</h3>
+<div class="mute">by ${esc(i.name)} · ${ago(i.createdAt)}</div><p>${esc(i.pitch)}</p>`+
+(mine?`<div class="mute">This is your idea.</div>`:openForm===i.id?
+`<label>Company name</label><input id="cn"><label>What you can offer</label><select id="ct"><option>Sponsorship</option><option>Equity investment</option><option>Sponsorship + equity</option></select>
+<label>Message</label><textarea id="cm"></textarea><label>Your contact (email / phone)</label><input id="cc">
+<button class="btn" data-a="send" data-id="${esc(i.id)}">Send interest</button><button class="btn ghost" data-a="cancel">Cancel</button>`
+:`<button class="btn" data-a="open" data-id="${esc(i.id)}">I'm interested</button><div class="mute" style="margin-top:10px"><b>Contact:</b> ${esc(i.contact)}</div>`)+`</div>`}
+
+function render(){
+ const el=$("app");if(!user){el.innerHTML=authView();return}
+ let h=`<div class="tabs">${[["browse","Browse"],["post","Post idea"],["mine","Dashboard"]].map(([t,l])=>`<button data-t="${t}" class="${t===tab?"on":""}">${l}</button>`).join("")}</div>`;
+ if(tab==="browse"){
+  h+=`<div class="row"><input id="q" placeholder="Search ideas" value="${esc(q)}"><select id="fc"><option value="">All</option>${CATS.map(c=>`<option ${c===fc?"selected":""}>${c}</option>`).join("")}</select></div>`;
+  const l=ideas.filter(i=>(!fc||i.category===fc)&&(!q||(i.title+" "+i.pitch).toLowerCase().includes(q.toLowerCase())));
+  h+=(l.length?l.map(cardHTML).join(""):`<div class="empty">No ideas yet. Be the first!</div>`)+msg();
+ }else if(tab==="post"){
+  h+=`<div class="card"><label>Your name</label><input id="pn"><label>Idea title</label><input id="pt" maxlength="80">
+<label>Describe your idea</label><textarea id="pp" maxlength="1200"></textarea><label>Category</label><select id="pc">${CATS.map(c=>`<option>${c}</option>`).join("")}</select>
+<label>Looking for</label><select id="ps"><option value="sponsor">Sponsorship</option><option value="equity">Equity investment</option><option value="either">Open to either</option></select>
+<label>Contact info (email / phone)</label><input id="pk"><div class="mute" style="margin-top:8px">Visible to signed-in members.</div>
+<button class="btn" data-a="post">Publish my idea</button>${msg()}</div>`;
+ }else{
+  const mine=ideas.filter(i=>i.ownerId===user.uid);
+  if(!mine.length)h+=`<div class="empty">You haven't posted an idea yet.</div>`;
+  mine.forEach(i=>{const os=[...offers.values()].filter(o=>o.ideaId===i.id).sort((a,b)=>(b.createdAt?.toMillis?.()||0)-(a.createdAt?.toMillis?.()||0));
+   h+=`<div class="card"><h3>${esc(i.title)}</h3><div class="mute">${os.length} offer${os.length==1?"":"s"}</div>`+
+   os.map(o=>`<div class="offer"><b>${esc(o.company)}</b> · ${esc(o.type)}<br>${esc(o.message)}<br><span class="mute">Reply to: ${esc(o.contact)}</span></div>`).join("")+
+   `<button class="btn ghost" data-a="del" data-id="${esc(i.id)}">Delete idea</button></div>`});
+  const sent=[...offers.values()].filter(o=>o.fromId===user.uid);
+  if(sent.length){h+=`<h3>Offers I sent</h3>`+sent.map(o=>`<div class="card"><b>${esc(ideas.find(i=>i.id===o.ideaId)?.title||"(removed idea)")}</b><div class="mute">${esc(o.type)}</div></div>`).join("")}
+  h+=msg();
+ }
+ h+=`<button class="btn ghost" data-a="out">Sign out (${esc(user.email)})</button>`;
+ el.innerHTML=h;
+}
+
+function listen(){
+ unsubs.forEach(u=>u());unsubs=[];
+ unsubs.push(onSnapshot(collection(db,"ideas"),s=>{ideas=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.toMillis?.()||Date.now())-(a.createdAt?.toMillis?.()||Date.now()));render()},e=>say("Could not load ideas: "+e.code,1)));
+ for(const f of ["ideaOwnerId","fromId"])unsubs.push(onSnapshot(query(collection(db,"interests"),where(f,"==",user.uid)),s=>{s.docs.forEach(d=>offers.set(d.id,{id:d.id,...d.data()}));render()},()=>{}));
+}
+
+onAuthStateChanged(auth,u=>{user=u;offers.clear();ideas=[];if(u)listen();else{unsubs.forEach(x=>x());unsubs=[]}render()});
+
+$("app").addEventListener("input",e=>{if(e.target.id==="q"){q=e.target.value;const p=e.target.selectionStart;render();const n=$("q");n.focus();n.setSelectionRange(p,p)}});
+$("app").addEventListener("change",e=>{if(e.target.id==="fc"){fc=e.target.value;render()}});
+$("app").addEventListener("click",async e=>{
+ const t=e.target.dataset.t,a=e.target.dataset.a,id=e.target.dataset.id;
+ if(t){tab=t;note="";openForm=null;return render()}
+ if(!a)return;
+ try{
+  if(a==="in"||a==="up"){const em=V("em"),pw=$("pw").value;if(!em||pw.length<6)return say("Enter an email and a password of 6+ characters.",1);
+   await(a==="up"?createUserWithEmailAndPassword:signInWithEmailAndPassword)(auth,em,pw);note=""}
+  else if(a==="out")await signOut(auth);
+  else if(a==="open"){openForm=id;note="";render()}
+  else if(a==="cancel"){openForm=null;render()}
+  else if(a==="post"){const d={name:V("pn"),title:V("pt"),pitch:V("pp"),category:V("pc"),seeking:V("ps"),contact:V("pk")};
+   if(Object.values(d).some(x=>!x))return say("Please fill in every field.",1);
+   await addDoc(collection(db,"ideas"),{...d,ownerId:user.uid,createdAt:serverTimestamp()});tab="mine";say("")}
+  else if(a==="send"){const idea=ideas.find(i=>i.id===id),o={company:V("cn"),type:V("ct"),message:V("cm"),contact:V("cc")};
+   if(Object.values(o).some(x=>!x))return say("Please fill in every field.",1);
+   await addDoc(collection(db,"interests"),{...o,ideaId:id,ideaOwnerId:idea.ownerId,fromId:user.uid,createdAt:serverTimestamp()});openForm=null;say("Sent! The entrepreneur will contact you.")}
+  else if(a==="del"&&confirm("Delete this idea?"))await deleteDoc(doc(db,"ideas",id));
+ }catch(err){say(err.code==="auth/invalid-credential"?"Wrong email or password.":err.code==="auth/email-already-in-use"?"That email already has an account. Tap Sign in.":"Error: "+(err.code||err.message),1)}
+});
+render();
+</script></body></html>
